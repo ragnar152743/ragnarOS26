@@ -33,13 +33,13 @@ from PyQt6.QtCore import QUrl, QPropertyAnimation, QAbstractAnimation
 
 APP_NAME = "Ragnar OS 26"
 
-PASTEBIN_RAW_BASE = "https://pastebin.com/raw/"
+PASTEBIN_RAW_BASE = "https://raw.githubusercontent.com/ragnar152743/ragnarOS26/refs/heads/main/"
 
 
 
 # 🔄 CONFIGURATION MISE À JOUR - Changez juste cet ID pour mettre à jour !
 
-UPDATE_PASTEBIN_ID = "ri1eAZen"  # ⬅️ Remplacez par l'ID de votre nouveau code Pastebin
+UPDATE_PASTEBIN_ID = "ragnarOS26"  # ⬅️ Remplacez par l'ID de votre nouveau code GitHub
 
 STATE_DIR = Path.home() / ".ragnar_os26"
 
@@ -53,7 +53,7 @@ BACKUP_DIR = STATE_DIR / "backups"
 SANDBOX_DIR = STATE_DIR / "sandbox"
 MEM_SANDBOX: Dict[str, bytes] = {}
 
-DEFAULT_LOCAL_VERSION = "26.3.0"
+DEFAULT_LOCAL_VERSION = "26.3.3"
 
 # Style moderne noir pour toutes les applications Ragnar OS
 RAGNAR_MODERN_STYLE = """
@@ -1315,16 +1315,18 @@ QtWidgets.QVBoxLayout.addSeparator = _layout_addSeparator
 def update_version_in_state():
     """Met à jour la version dans le fichier state.json"""
     try:
-        # Forcer la recréation du state avec la bonne version
-        state = {
-            "version": DEFAULT_LOCAL_VERSION,
-            "theme": "dark",
-            "features": {},
-            "last_update_check": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "force_updated": True
-        }
-        write_state(state)
-        print(f"State forcé vers version {DEFAULT_LOCAL_VERSION}")
+        # Mettre à jour sans écraser les clés existantes (préserve login_password_hash)
+        try:
+            current = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            current = {}
+        current.setdefault("theme", "dark")
+        current.setdefault("features", {})
+        current["version"] = DEFAULT_LOCAL_VERSION
+        current["last_update_check"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        current["force_updated"] = True
+        write_state(current)
+        print(f"State mis à jour vers version {DEFAULT_LOCAL_VERSION} (préservation des clés)")
     except Exception as e:
         print(f"Erreur lors de la mise à jour forcée: {e}")
 
@@ -1478,13 +1480,12 @@ QListWidget, QTableWidget {
 
 
 # Gradients de fond avec effets de lumière et verre
-DARK_BG_GRADIENT = QtGui.QLinearGradient(0, 0, 0, 1)
+DARK_BG_GRADIENT = QtGui.QRadialGradient(0.5, 0.35, 0.9)
 DARK_BG_GRADIENT.setCoordinateMode(QtGui.QGradient.CoordinateMode.ObjectBoundingMode)
-DARK_BG_GRADIENT.setColorAt(0.0, QtGui.QColor(20, 25, 40))  # Bleu profond avec lumière
-DARK_BG_GRADIENT.setColorAt(0.2, QtGui.QColor(15, 20, 35))  # Bleu moyen
-DARK_BG_GRADIENT.setColorAt(0.5, QtGui.QColor(10, 15, 25))  # Bleu sombre
-DARK_BG_GRADIENT.setColorAt(0.8, QtGui.QColor(5, 8, 15))    # Bleu très sombre
-DARK_BG_GRADIENT.setColorAt(1.0, QtGui.QColor(2, 4, 8))     # Presque noir
+DARK_BG_GRADIENT.setColorAt(0.0, QtGui.QColor(28, 38, 58))  # Halo doux bleu
+DARK_BG_GRADIENT.setColorAt(0.25, QtGui.QColor(18, 26, 44)) # Bleu profond
+DARK_BG_GRADIENT.setColorAt(0.6, QtGui.QColor(10, 16, 28))  # Bleu sombre
+DARK_BG_GRADIENT.setColorAt(1.0, QtGui.QColor(4, 6, 12))    # Presque noir
 
 # Gradient avec effets de lumière
 LIGHT_BG_GRADIENT = QtGui.QRadialGradient(0.5, 0.3, 1.0)
@@ -1567,6 +1568,10 @@ class BootPage(QtWidgets.QWidget):
         super().__init__(parent)
 
         self.setAutoFillBackground(True)
+        # Pour capter les séquences de touches secrètes
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        self._secret_seq = []  # stocke les dernières touches
+        self._secret_last_ts = 0
 
         # Créer un gradient animé plus beau
         self.animated_gradient = QtGui.QLinearGradient(0, 0, 0, 1)
@@ -2058,6 +2063,10 @@ class DesktopPage(QtWidgets.QWidget):
         super().__init__(parent)
 
         self.setAutoFillBackground(True)
+        # État pour la séquence secrète (flèche haut, flèche bas)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        self._secret_seq = []
+        self._secret_last_ts = 0
         
         # Charger le fond d'écran personnalisé ou utiliser le défaut
         self.load_wallpaper()
@@ -2114,34 +2123,48 @@ class DesktopPage(QtWidgets.QWidget):
 
 
 
+        # Barre des tâches (refonte)
         dock = QtWidgets.QWidget(objectName="GlassCard")
-
         dlay = QtWidgets.QHBoxLayout(dock)
-
-        dlay.setContentsMargins(25, 20, 25, 20)
-        dlay.setSpacing(35)
+        # Style barre: moderne, arrondie, très compacte (icônes plus haut)
+        dlay.setContentsMargins(10, 0, 10, 24)
+        dlay.setSpacing(8)
+        dlay.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        dock.setStyleSheet("""
+            QWidget#GlassCard {
+                background: rgba(20, 24, 36, 0.48);
+                border: 1px solid rgba(255,255,255,0.18);
+                border-radius: 14px;
+            }
+        """)
 
         def btn(emoji, text, cb):
 
-            b = QtWidgets.QPushButton(f"{emoji}\n{text}")
+            b = QtWidgets.QPushButton(f"{emoji}")
 
             b.setObjectName("DesktopButton")
+            b.setToolTip(text)
+            b.setFixedSize(52, 52)
+            sp = b.sizePolicy()
+            sp.setHorizontalPolicy(QtWidgets.QSizePolicy.Policy.Fixed)
+            sp.setVerticalPolicy(QtWidgets.QSizePolicy.Policy.Fixed)
+            b.setSizePolicy(sp)
             
-            # Style moderne pour les boutons du dock (compatible PyQt6)
+            # Style moderne pour les boutons carrés compacts
             b.setStyleSheet("""
                 QPushButton {
                     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                         stop:0 rgba(255, 255, 255, 0.25),
                         stop:0.5 rgba(255, 255, 255, 0.15),
                         stop:1 rgba(255, 255, 255, 0.05));
-                    border: 2px solid rgba(255, 255, 255, 0.3);
-                    border-radius: 15px;
-                    padding: 12px;
-                    font-size: 14px;
+                    border: 2px solid rgba(255, 255, 255, 0.26);
+                    border-radius: 10px;
+                    padding: 6px;
+                    font-size: 16px;
                     font-weight: 600;
                     color: white;
-                    min-width: 90px;
-                    min-height: 70px;
+                    min-width: 52px;
+                    min-height: 52px;
                     text-align: center;
                 }
                 QPushButton:hover {
@@ -2149,14 +2172,14 @@ class DesktopPage(QtWidgets.QWidget):
                         stop:0 rgba(0, 255, 136, 0.3),
                         stop:0.5 rgba(0, 255, 136, 0.2),
                         stop:1 rgba(0, 255, 136, 0.1));
-                    border: 2px solid rgba(0, 255, 136, 0.5);
+                    border: 2px solid rgba(0, 255, 136, 0.45);
                 }
                 QPushButton:pressed {
                     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                         stop:0 rgba(0, 255, 136, 0.4),
                         stop:0.5 rgba(0, 255, 136, 0.3),
                         stop:1 rgba(0, 255, 136, 0.2));
-                    border: 2px solid rgba(0, 255, 136, 0.7);
+                    border: 2px solid rgba(0, 255, 136, 0.6);
                 }
             """)
 
@@ -2167,28 +2190,64 @@ class DesktopPage(QtWidgets.QWidget):
             # b.leaveEvent = lambda event: self.remove_glow_effect(b)
 
             return b
-        # Ajouter un stretch au début
-        dlay.addStretch(2)
+        # Logo Ragnar à gauche (ouvre le menu Applications)
+        logo_btn = QtWidgets.QPushButton("🔷")
+        logo_btn.setToolTip("Menu Ragnar")
+        logo_btn.setFixedSize(28, 28)
+        logo_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,0.08);
+                border: 1px solid rgba(255,255,255,0.25);
+                border-radius: 14px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background: rgba(0,255,136,0.18);
+                border-color: rgba(0,255,136,0.5);
+            }
+        """)
+        logo_btn.clicked.connect(self.show_apps_menu)
+        dlay.addWidget(logo_btn)
+        dlay.addSpacing(4)
         
         apps = [
-            ("🖥️", "Système", self.show_system),
+            ("🌐", "Navigateur", self.show_browser),
             ("📁", "Fichiers", self.show_files),
             ("🛍️", "Store", self.show_store),
-            ("🌐", "Navigateur", self.show_browser),
-            ("💬", "Chat", self.show_chat),
-            ("📝", "Notes", self.show_notes),
+            ("🖥️", "Système", self.show_system),
             ("⬇️", "MAJ", self.show_updater),
             ("🧩", "Config", self.show_settings)
         ]
         
+        # Zone d'icônes d'applications
+        apps_bar = QtWidgets.QWidget()
+        apps_bar_lay = QtWidgets.QHBoxLayout(apps_bar)
+        apps_bar_lay.setContentsMargins(0, 0, 0, 0)
+        apps_bar_lay.setSpacing(4)
+        apps_bar_lay.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         for i, (e, t, c) in enumerate(apps):
-            dlay.addWidget(btn(e, t, c))
-            # Ajouter un petit stretch entre chaque bouton (sauf le dernier)
-            if i < len(apps) - 1:
-                dlay.addStretch(1)
-        
-        # Ajouter un stretch à la fin
-        dlay.addStretch(2)
+            apps_bar_lay.addWidget(btn(e, t, c))
+        dlay.addWidget(apps_bar, 1)
+
+        # (Bouton Options supprimé sur demande)
+
+        # Sélecteur multi-bureaux à droite
+        desktops_container = QtWidgets.QWidget()
+        desktops_lay = QtWidgets.QHBoxLayout(desktops_container)
+        desktops_lay.setContentsMargins(0, 0, 0, 0)
+        desktops_lay.setSpacing(6)
+        desktops_icon = QtWidgets.QLabel("🗔")
+        desktops_icon.setToolTip("Bureaux virtuels")
+        self.desktop_selector = QtWidgets.QComboBox()
+        self.desktop_selector.addItems([
+            "Bureau 1 - Navigateur",
+            "Bureau 2 - Fichiers",
+            "Bureau 3 - Système"
+        ])
+        self.desktop_selector.currentIndexChanged.connect(self.switch_virtual_desktop)
+        desktops_lay.addWidget(desktops_icon)
+        desktops_lay.addWidget(self.desktop_selector)
+        dlay.addWidget(desktops_container, 0)
 
 
 
@@ -2213,12 +2272,115 @@ class DesktopPage(QtWidgets.QWidget):
         self.timer.start(15_000)
 
         self._tick()
+        
+        # Charger le bureau virtuel précédent si présent
+        try:
+            st = _read_state_safe()
+            idx = int(st.get("current_virtual_desktop", 0))
+            if 0 <= idx < self.desktop_selector.count():
+                self.desktop_selector.setCurrentIndex(idx)
+        except Exception:
+            pass
+
+    def switch_virtual_desktop(self, index: int):
+        """Active un profil de bureau et lance l'app associée."""
+        try:
+            # Persister le bureau choisi
+            st = _read_state_safe()
+            st["current_virtual_desktop"] = int(index)
+            _write_state_safe(st)
+        except Exception:
+            pass
+
+        # Mappage bureau → action principale
+        if index == 0:
+            # Bureau 1: Navigateur
+            try:
+                self.show_browser()
+            except Exception:
+                pass
+        elif index == 1:
+            # Bureau 2: Fichiers
+            try:
+                self.show_files()
+            except Exception:
+                pass
+        elif index == 2:
+            # Bureau 3: Système
+            try:
+                self.show_system()
+            except Exception:
+                pass
 
 
 
     def _tick(self):
         self.clock.setText(QtCore.QTime.currentTime().toString("HH:mm"))
+
+    # === Dev Tool caché: séquence Flèche Haut puis Flèche Bas
+    def keyPressEvent(self, event: QtGui.QKeyEvent):
+        try:
+            key = event.key()
+            now = time.time()
+            # reset si plus de 2s entre touches
+            if now - self._secret_last_ts > 2.0:
+                self._secret_seq = []
+            self._secret_last_ts = now
+            if key in (QtCore.Qt.Key.Key_Up, QtCore.Qt.Key.Key_Down):
+                self._secret_seq.append(key)
+                # Garder uniquement 2 dernières
+                self._secret_seq = self._secret_seq[-2:]
+                if self._secret_seq == [QtCore.Qt.Key.Key_Up, QtCore.Qt.Key.Key_Down]:
+                    self._secret_seq = []
+                    self.show_dev_tool()
+                    return
+        except Exception:
+            pass
+        super().keyPressEvent(event)
+
+    def show_dev_tool(self):
+        try:
+            d = DevToolDialog(self)
+            d.show()
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Dev Tool", f"Erreur ouverture Dev Tool: {e}")
     
+    def show_dock_options_menu(self):
+        menu = QtWidgets.QMenu(self)
+        # Verre Ultra toggle
+        st = _read_state_safe()
+        ultra_enabled = bool(st.get("ultra_glass_enabled", False))
+        ultra_action = menu.addAction("✨ Verre Ultra: " + ("ON" if ultra_enabled else "OFF"))
+        def toggle_ultra():
+            s = _read_state_safe()
+            s["ultra_glass_enabled"] = not bool(s.get("ultra_glass_enabled", False))
+            _write_state_safe(s)
+            QtWidgets.QMessageBox.information(self, "✨ Verre Ultra", "Modifié. Ouvrez un module (ex: Fichiers) pour voir l'effet.")
+        ultra_action.triggered.connect(toggle_ultra)
+
+        # Rapp Bureau
+        rapp_action = menu.addAction("📦 Lancer Rapp Bureau…")
+        rapp_action.triggered.connect(self.launch_rapp_from_desktop)
+
+        # Sandbox toggle
+        sandbox_enabled = bool(st.get("sandbox_enabled", False))
+        sandbox_action = menu.addAction("🔒 Sandbox: " + ("ON" if sandbox_enabled else "OFF"))
+        def toggle_sandbox():
+            s = _read_state_safe()
+            s["sandbox_enabled"] = not bool(s.get("sandbox_enabled", False))
+            _write_state_safe(s)
+            QtWidgets.QMessageBox.information(self, "🔒 Sandbox", "État de la sandbox mis à jour.")
+        sandbox_action.triggered.connect(toggle_sandbox)
+
+        menu.addSeparator()
+        upd_action = menu.addAction("⬇️ Ouvrir Updater")
+        upd_action.triggered.connect(self.show_updater)
+        restart_action = menu.addAction("🔄 Redémarrer")
+        restart_action.triggered.connect(self.restart_ragnar)
+
+        pos = QtGui.QCursor.pos()
+        menu.exec(pos)
+
     def add_glow_effect(self, widget):
         """Ajoute un effet de lueur spectaculaire avec jeux de lumière au widget"""
         try:
@@ -2389,6 +2551,11 @@ class DesktopPage(QtWidgets.QWidget):
             action.triggered.connect(callback)
         
         menu.addSeparator()
+        # Ajout 26.3.3: Rapp Bureau (choisir un .rapp sur le Bureau)
+        rapp_action = menu.addAction("📦 Rapp Bureau")
+        rapp_action.triggered.connect(self.launch_rapp_from_desktop)
+        
+        menu.addSeparator()
         
         # Bureautique et Productivité
         productivity_section = [
@@ -2515,6 +2682,55 @@ class DesktopPage(QtWidgets.QWidget):
         header = make_header("Informations Système", "Monitoring en temps réel")
         lay.addWidget(header)
         
+        # 26.3.3: Panneau Verre Ultra (intensité + persistance)
+        ultra_card = QtWidgets.QWidget(objectName="GlassCard")
+        ultra_layout = QtWidgets.QFormLayout(ultra_card)
+        ultra_layout.setContentsMargins(16, 16, 16, 16)
+        ultra_title = QtWidgets.QLabel("✨ Verre Ultra")
+        ultra_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #00ff88; padding: 8px;")
+        lay.addWidget(ultra_title)
+
+        enable_checkbox = QtWidgets.QCheckBox("Activer l'effet Verre Ultra")
+        radius_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        radius_slider.setRange(0, 64)
+        radius_slider.setSingleStep(1)
+        radius_slider.setPageStep(4)
+        radius_value = QtWidgets.QLabel("28")
+
+        # Charger état
+        st = _read_state_safe()
+        enable_checkbox.setChecked(bool(st.get("ultra_glass_enabled", False)))
+        try:
+            radius_slider.setValue(int(float(st.get("ultra_glass_radius", 28))))
+            radius_value.setText(str(radius_slider.value()))
+        except Exception:
+            radius_slider.setValue(28)
+            radius_value.setText("28")
+
+        def on_enable_changed(checked):
+            s = _read_state_safe()
+            s["ultra_glass_enabled"] = bool(checked)
+            _write_state_safe(s)
+
+        def on_radius_changed(val):
+            radius_value.setText(str(val))
+            s = _read_state_safe()
+            s["ultra_glass_radius"] = float(val)
+            _write_state_safe(s)
+
+        enable_checkbox.toggled.connect(on_enable_changed)
+        radius_slider.valueChanged.connect(on_radius_changed)
+
+        ultra_layout.addRow(enable_checkbox)
+        hl = QtWidgets.QHBoxLayout()
+        slider_container = QtWidgets.QWidget()
+        slider_container.setLayout(hl)
+        hl.addWidget(radius_slider)
+        hl.addWidget(radius_value)
+        ultra_layout.addRow("Intensité du flou", slider_container)
+
+        lay.addWidget(ultra_card)
+
         # Créer des cartes modernes pour chaque section
         
         # Carte Système
@@ -3963,6 +4179,36 @@ class DesktopPage(QtWidgets.QWidget):
         fade_in(d, 600)
     
     # Méthodes pour les nouvelles applications du menu
+    def launch_rapp_from_desktop(self):
+        """Scanne le Bureau pour les .rapp et en lance un au choix."""
+        home = Path.home()
+        desktop_candidates = [home / "Desktop", home / "Bureau"]
+        desktop_dir = None
+        for cand in desktop_candidates:
+            if cand.exists():
+                desktop_dir = cand
+                break
+        if desktop_dir is None:
+            QtWidgets.QMessageBox.warning(self, "Bureau introuvable", "Aucun dossier Bureau n'a été trouvé.")
+            return
+        try:
+            rapps = sorted(desktop_dir.glob("*.rapp"))
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Erreur", f"Impossible de lister le Bureau:\n{e}")
+            return
+        if not rapps:
+            QtWidgets.QMessageBox.information(self, "Aucun .rapp", "Aucun fichier .rapp n'a été trouvé sur le Bureau.")
+            return
+        items = [p.name for p in rapps]
+        item, ok = QtWidgets.QInputDialog.getItem(self, "Lancer .rapp", "Choisir une application :", items, 0, False)
+        if not ok or not item:
+            return
+        target = desktop_dir / item
+        try:
+            safe_open(target)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Erreur", f"Impossible de lancer {item}:\n{e}")
+
     def show_text_editor(self):
         """Éditeur de texte professionnel"""
         d = GlassDialog("📄 Éditeur de Texte Ragnar", (1000, 700), self)
@@ -7142,6 +7388,10 @@ Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
         nav_layout.addWidget(up_btn)
         nav_layout.addWidget(home_btn)
         nav_layout.addWidget(refresh_btn)
+
+        # Option: effet de verre ultra réaliste
+        glass_toggle = QtWidgets.QCheckBox("✨ Verre Ultra")
+        nav_layout.addWidget(glass_toggle)
         
         lay.addWidget(nav_card)
         
@@ -7204,6 +7454,57 @@ Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
         
         lay.addWidget(actions_card)
         
+        # Double-clic: ouvrir fichiers / exécuter .rapp
+        def on_item_double_click(item):
+            text = item.text()
+            try:
+                # Extraire le nom réel
+                name = text.split(' ', 1)[1] if ' ' in text else text
+                if name.endswith('/'):
+                    name = name[:-1]
+                if ' (' in name:
+                    name = name.split(' (', 1)[0]
+                target = current_path / name
+                if target.is_dir():
+                    # Ouvrir le dossier avec l'appli par défaut
+                    safe_open(target)
+                    return
+                # Si .rapp, lancer
+                if target.suffix.lower() == '.rapp':
+                    safe_open(target)
+                    return
+                # Sinon ouvrir normalement
+                safe_open(target)
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(d, "Erreur", f"Ouverture impossible:\n{e}")
+
+        file_list.itemDoubleClicked.connect(on_item_double_click)
+
+        # Appliquer l'effet 'Verre Ultra'
+        def apply_ultra_glass(enabled: bool):
+            widgets = [d, nav_card, files_card, actions_card]
+            for w in widgets:
+                try:
+                    if enabled:
+                        # Intensité récupérée depuis l'état (persistée)
+                        st = _read_state_safe()
+                        radius = float(st.get("ultra_glass_radius", 28.0))
+                        effect = QtWidgets.QGraphicsBlurEffect(w)
+                        effect.setBlurRadius(max(0.0, min(64.0, radius)))
+                        w.setGraphicsEffect(effect)
+                    else:
+                        w.setGraphicsEffect(None)
+                except Exception:
+                    pass
+
+        glass_toggle.toggled.connect(apply_ultra_glass)
+        # Charger état initial
+        try:
+            st = _read_state_safe()
+            glass_toggle.setChecked(bool(st.get("ultra_glass_enabled", False)))
+        except Exception:
+            pass
+
         d.show()
         fade_in(d, 600)
     
@@ -11621,32 +11922,31 @@ def apply_update(update_info: Dict[str, Any], progress_callback=None) -> Dict[st
         
 
         if progress_callback:
-
+            
             progress_callback(2, 3, "Mise à jour du state...")
 
         
 
-        # Mise à jour du state
-
+        # Mise à jour du state + journalisation historique
         st = read_state()
-
+        prev_version = st.get("version", DEFAULT_LOCAL_VERSION)
         st["version"] = new_version
-
         st["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-
         st["last_backup_count"] = len(backups)
-
         st["update_source"] = "pastebin"
-
+        history = list(st.get("update_history", []))
+        history.append({
+            "from": prev_version,
+            "to": new_version,
+            "at": st["updated_at"],
+            "source": st["update_source"],
+            "method": update_info.get("type", "update")
+        })
+        st["update_history"] = history[-200:]
         write_state(st)
 
-        
-
         if progress_callback:
-
             progress_callback(3, 3, "Mise à jour terminée !")
-
-            
 
         return {
 
@@ -12699,6 +12999,279 @@ et utilisables au quotidien.</p>
         if hasattr(self.parent(), 'desktop'):
             self.parent().desktop.show_settings()
 
+# ====== Auth ======
+
+def _hash_password(pwd: str) -> str:
+    try:
+        h = hashlib.sha256()
+        h.update(pwd.encode('utf-8'))
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+class CreatePasswordDialog(GlassDialog):
+    def __init__(self, parent=None):
+        super().__init__("🔐 Créer un mot de passe", (420, 260), parent)
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.addWidget(make_header("Sécurisez votre session", "Créez un mot de passe Ragnar"))
+        form = QtWidgets.QFormLayout()
+        # Champ mot de passe + bouton afficher/masquer
+        p1_row = QtWidgets.QWidget(); p1_row_l = QtWidgets.QHBoxLayout(p1_row); p1_row_l.setContentsMargins(0,0,0,0)
+        self.p1 = QtWidgets.QLineEdit(); self.p1.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+        p1_toggle = QtWidgets.QPushButton("👁️"); p1_toggle.setCheckable(True); p1_toggle.setFixedWidth(36); p1_toggle.setToolTip("Afficher/Masquer")
+        p1_toggle.clicked.connect(lambda checked, le=self.p1, b=p1_toggle: (le.setEchoMode(QtWidgets.QLineEdit.EchoMode.Normal if checked else QtWidgets.QLineEdit.EchoMode.Password), b.setText("🙈" if checked else "👁️")))
+        p1_row_l.addWidget(self.p1); p1_row_l.addWidget(p1_toggle)
+        # Confirmation + bouton afficher/masquer
+        p2_row = QtWidgets.QWidget(); p2_row_l = QtWidgets.QHBoxLayout(p2_row); p2_row_l.setContentsMargins(0,0,0,0)
+        self.p2 = QtWidgets.QLineEdit(); self.p2.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+        p2_toggle = QtWidgets.QPushButton("👁️"); p2_toggle.setCheckable(True); p2_toggle.setFixedWidth(36); p2_toggle.setToolTip("Afficher/Masquer")
+        p2_toggle.clicked.connect(lambda checked, le=self.p2, b=p2_toggle: (le.setEchoMode(QtWidgets.QLineEdit.EchoMode.Normal if checked else QtWidgets.QLineEdit.EchoMode.Password), b.setText("🙈" if checked else "👁️")))
+        p2_row_l.addWidget(self.p2); p2_row_l.addWidget(p2_toggle)
+        form.addRow("Mot de passe", p1_row)
+        form.addRow("Confirmer", p2_row)
+        lay.addLayout(form)
+        btns = QtWidgets.QHBoxLayout()
+        ok = QtWidgets.QPushButton("✅ Enregistrer"); cancel = QtWidgets.QPushButton("❌ Annuler")
+        btns.addStretch(1); btns.addWidget(ok); btns.addWidget(cancel)
+        lay.addLayout(btns)
+        ok.clicked.connect(self._save)
+        cancel.clicked.connect(self.reject)
+    def _save(self):
+        a = (self.p1.text() or "").strip()
+        b = (self.p2.text() or "").strip()
+        if len(a) < 4:
+            QtWidgets.QMessageBox.warning(self, "Trop court", "Le mot de passe doit contenir au moins 4 caractères.")
+            return
+        if a != b:
+            QtWidgets.QMessageBox.warning(self, "Non identiques", "Les mots de passe ne correspondent pas.")
+            return
+        st = read_state(); st["login_password_hash"] = _hash_password(a); write_state(st)
+        self.accept()
+
+class LoginDialog(GlassDialog):
+    def __init__(self, parent=None):
+        super().__init__("🔓 Connexion", (380, 180), parent)
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.addWidget(make_header("Connexion Ragnar", "Entrez votre mot de passe"))
+        # Champ mot de passe avec afficher/masquer
+        p_row = QtWidgets.QWidget(); p_row_l = QtWidgets.QHBoxLayout(p_row); p_row_l.setContentsMargins(0,0,0,0)
+        self.p = QtWidgets.QLineEdit(); self.p.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+        p_toggle = QtWidgets.QPushButton("👁️"); p_toggle.setCheckable(True); p_toggle.setFixedWidth(36); p_toggle.setToolTip("Afficher/Masquer")
+        p_toggle.clicked.connect(lambda checked, le=self.p, b=p_toggle: (le.setEchoMode(QtWidgets.QLineEdit.EchoMode.Normal if checked else QtWidgets.QLineEdit.EchoMode.Password), b.setText("🙈" if checked else "👁️")))
+        p_row_l.addWidget(self.p); p_row_l.addWidget(p_toggle)
+        lay.addWidget(p_row)
+        # Lien 'Mot de passe oublié ?'
+        forgot_btn = QtWidgets.QPushButton("Mot de passe oublié ?")
+        forgot_btn.setFlat(True)
+        forgot_btn.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        forgot_btn.setStyleSheet("color: #00ffaa; text-decoration: underline; background: transparent; border: none;")
+        lay.addWidget(forgot_btn, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
+        btns = QtWidgets.QHBoxLayout(); ok = QtWidgets.QPushButton("▶️ Entrer"); cancel = QtWidgets.QPushButton("❌ Quitter")
+        btns.addStretch(1); btns.addWidget(ok); btns.addWidget(cancel); lay.addLayout(btns)
+        ok.clicked.connect(self._login)
+        cancel.clicked.connect(self.reject)
+        # Flux de réinitialisation minimal
+        def _do_forgot():
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "Mot de passe oublié",
+                "Réinitialiser le mot de passe et en définir un nouveau ?",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
+            )
+            if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                st = read_state()
+                st.pop("login_password_hash", None)
+                write_state(st)
+                QtWidgets.QMessageBox.information(self, "Réinitialisé", "Mot de passe supprimé. Définissez-en un nouveau.")
+                dlg = CreatePasswordDialog(self)
+                dlg.exec()
+        forgot_btn.clicked.connect(_do_forgot)
+        self.ok = False
+    def _login(self):
+        st = read_state(); want = st.get("login_password_hash", "")
+        if want and _hash_password(self.p.text().strip()) == want:
+            self.ok = True; self.accept()
+        else:
+            QtWidgets.QMessageBox.critical(self, "Erreur", "Mot de passe incorrect.")
+
+class DevToolDialog(GlassDialog):
+    """Outil caché pour gérer les backups/versions et l'historique."""
+    def __init__(self, parent=None):
+        super().__init__("🛠️ Dev Tool Mises à Jour (Caché)", (880, 640), parent)
+        self._backups = []
+        self._saved_copies = []
+        self._setup_ui()
+        self._refresh_lists()
+
+    def _setup_ui(self):
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setSpacing(14)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.addWidget(make_header("Dev Tool Mises à Jour", "Liste des backups et copies sauvegardées. Restaurez ou promouvez des versions."))
+
+        self.tabs = QtWidgets.QTabWidget()
+        # Onglet Versions
+        versions_tab = QtWidgets.QWidget()
+        vlay = QtWidgets.QVBoxLayout(versions_tab)
+        vlay.setContentsMargins(8,8,8,8)
+        self.versions_list = QtWidgets.QTreeWidget()
+        self.versions_list.setHeaderLabels(["Type", "Nom", "Version", "Taille", "Chemin"]) 
+        self.versions_list.setColumnWidth(0, 110)
+        self.versions_list.setColumnWidth(1, 260)
+        self.versions_list.setColumnWidth(2, 90)
+        self.versions_list.setColumnWidth(3, 80)
+        vlay.addWidget(self.versions_list)
+        btns = QtWidgets.QHBoxLayout()
+        self.restore_btn = QtWidgets.QPushButton("↩️ Restaurer Backup")
+        self.promote_btn = QtWidgets.QPushButton("⬆️ Promouvoir Copie")
+        self.refresh_btn = QtWidgets.QPushButton("🔄 Rafraîchir")
+        btns.addWidget(self.restore_btn)
+        btns.addWidget(self.promote_btn)
+        btns.addStretch(1)
+        btns.addWidget(self.refresh_btn)
+        vlay.addLayout(btns)
+        self.tabs.addTab(versions_tab, "📦 Versions")
+
+        # Onglet Historique
+        hist_tab = QtWidgets.QWidget()
+        hlay = QtWidgets.QVBoxLayout(hist_tab)
+        hlay.setContentsMargins(8,8,8,8)
+        self.history_view = QtWidgets.QTextEdit(); self.history_view.setReadOnly(True)
+        self.history_view.setStyleSheet("font-family: 'Consolas','Courier New', monospace; font-size: 12px;")
+        hlay.addWidget(self.history_view)
+        self.tabs.addTab(hist_tab, "🧾 Historique")
+
+        lay.addWidget(self.tabs)
+        close_btn = QtWidgets.QPushButton("❌ Fermer")
+        close_btn.clicked.connect(self.close)
+        lay.addWidget(close_btn, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+
+        # Actions
+        self.refresh_btn.clicked.connect(self._refresh_lists)
+        self.restore_btn.clicked.connect(self._on_restore_selected)
+        self.promote_btn.clicked.connect(self._on_promote_selected)
+
+    def _refresh_lists(self):
+        self._backups, self._saved_copies = self._scan_backup_dir()
+        self.versions_list.clear()
+        for item in self._backups + self._saved_copies:
+            twi = QtWidgets.QTreeWidgetItem([
+                item["type"], item["name"], item.get("version", "-"),
+                str(item.get("size", "")), item["path"]
+            ])
+            self.versions_list.addTopLevelItem(twi)
+        # Historique
+        try:
+            st = read_state()
+            hist = st.get("update_history", [])
+        except Exception:
+            hist = []
+        lines = [f"{h.get('at','?')}: {h.get('from','?')} -> {h.get('to','?')} ({h.get('source','?')}/{h.get('method','?')})" for h in hist]
+        self.history_view.setPlainText("\n".join(lines) if lines else "(aucun historique)")
+
+    def _scan_backup_dir(self):
+        backups = []
+        copies = []
+        try:
+            for p in sorted(BACKUP_DIR.glob("*")):
+                if not p.is_file():
+                    continue
+                name = p.name
+                size = p.stat().st_size
+                if ".meta.json" in name:
+                    continue
+                if ".backup_" in name:
+                    # Backup du fichier principal
+                    ver = self._extract_version_from_file(p)
+                    backups.append({"type": "backup", "name": name, "path": str(p), "version": ver, "size": size})
+                elif name.startswith("ragnarOS26_updated_") and name.endswith(".py"):
+                    ver = self._extract_version_from_file(p)
+                    copies.append({"type": "copy", "name": name, "path": str(p), "version": ver, "size": size})
+        except Exception:
+            pass
+        return backups, copies
+
+    def _extract_version_from_file(self, path: Path) -> str:
+        try:
+            code = Path(path).read_text(encoding="utf-8")
+            return extract_version_from_code(code)
+        except Exception:
+            return "?"
+
+    def _selected_item(self):
+        it = self.versions_list.currentItem()
+        if not it:
+            return None
+        return {
+            "type": it.text(0),
+            "name": it.text(1),
+            "version": it.text(2),
+            "path": it.text(4)
+        }
+
+    def _on_restore_selected(self):
+        it = self._selected_item()
+        if not it or it["type"] != "backup":
+            QtWidgets.QMessageBox.information(self, "Restaurer", "Sélectionnez un backup à restaurer.")
+            return
+        target = Path(__file__).resolve()
+        backup_path = Path(it["path"]) 
+        if not backup_path.exists():
+            QtWidgets.QMessageBox.warning(self, "Backup", "Fichier de backup introuvable.")
+            return
+        ok = restore_backup(backup_path, target)
+        if ok:
+            self._append_history_entry(method="rollback", new_version=self._extract_version_from_file(target))
+            QtWidgets.QMessageBox.information(self, "Restauré", "Backup restauré. L'application va redémarrer.")
+            self._restart_prompt()
+        else:
+            QtWidgets.QMessageBox.critical(self, "Erreur", "Échec de la restauration.")
+
+    def _on_promote_selected(self):
+        it = self._selected_item()
+        if not it or it["type"] != "copy":
+            QtWidgets.QMessageBox.information(self, "Promouvoir", "Sélectionnez une copie mise à jour.")
+            return
+        src = Path(it["path"]).resolve()
+        if not src.exists():
+            QtWidgets.QMessageBox.warning(self, "Copie", "Fichier de copie introuvable.")
+            return
+        target = Path(__file__).resolve()
+        # Créer un backup avant promotion
+        create_backup(target)
+        try:
+            code = src.read_text(encoding="utf-8")
+            target.write_text(code, encoding="utf-8")
+            self._append_history_entry(method="promote", new_version=self._extract_version_from_file(src))
+            QtWidgets.QMessageBox.information(self, "Promu", "Copie promue en version active. Redémarrage requis.")
+            self._restart_prompt()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Erreur", f"Promotion échouée: {e}")
+
+    def _append_history_entry(self, method: str, new_version: str):
+        try:
+            st = read_state()
+            prev = st.get("version", DEFAULT_LOCAL_VERSION)
+            now = time.strftime("%Y-%m-%d %H:%M:%S")
+            hist = list(st.get("update_history", []))
+            hist.append({"from": prev, "to": new_version, "at": now, "source": "devtool", "method": method})
+            st["version"] = new_version
+            st["updated_at"] = now
+            st["update_history"] = hist[-200:]
+            write_state(st)
+        except Exception:
+            pass
+
+    def _restart_prompt(self):
+        reply = QtWidgets.QMessageBox.question(self, "Redémarrer", "Redémarrer Ragnar OS maintenant ?",
+                                               QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No)
+        if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+            try:
+                QtWidgets.QApplication.quit()
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            except Exception:
+                pass
+
 # ====== Main ======
 
 class MainWindow(QtWidgets.QStackedWidget):
@@ -12730,6 +13303,21 @@ class MainWindow(QtWidgets.QStackedWidget):
     def on_boot_finished(self):
 
         """Appelé quand le boot est terminé"""
+
+        # Auth au démarrage
+        try:
+            st = read_state()
+            if not st.get("login_password_hash"):
+                # Pas encore de mot de passe → forcer création
+                dlg = CreatePasswordDialog(self)
+                if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+                    QtWidgets.QApplication.quit(); return
+            else:
+                login = LoginDialog(self)
+                if login.exec() != QtWidgets.QDialog.DialogCode.Accepted or not login.ok:
+                    QtWidgets.QApplication.quit(); return
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Connexion", f"Ignorée suite à une erreur:\n{e}")
 
         self.setCurrentWidget(self.desktop)
 
@@ -12873,6 +13461,10 @@ if __name__ == "__main__":
     p_sbox.add_argument("state", choices=["on", "off"], help="Etat sandbox disque/réseau")
     p_sbox.add_argument("--mem", choices=["on", "off"], default=None, help="Sandbox mémoire (mem:/)")
 
+    p_rapp = sub.add_parser("run-rapp", help="Lancer un fichier .rapp (depuis un chemin ou le Bureau)")
+    p_rapp.add_argument("path", nargs="?", help="Chemin complet ou nom de fichier .rapp")
+    p_rapp.add_argument("--desktop", action="store_true", help="Forcer la recherche sur le Bureau")
+
     args = parser.parse_args()
 
     if not args.cmd or args.cmd == "run":
@@ -12896,6 +13488,75 @@ if __name__ == "__main__":
             st["sandbox_memory_enabled"] = (args.mem == "on")
         _write_state_safe(st)
         print(f"🔒 sandbox_enabled={st['sandbox_enabled']} | sandbox_memory_enabled={st.get('sandbox_memory_enabled')}")
+    elif args.cmd == "run-rapp":
+        # Résolution du Bureau (Desktop/Bureau) multiplateforme
+        home = Path.home()
+        desktop_candidates = [home / "Desktop", home / "Bureau"]
+        desktop_dir = None
+        for cand in desktop_candidates:
+            if cand.exists():
+                desktop_dir = cand
+                break
+
+        user_input = args.path.strip() if args.path else ""
+
+        target_path: Optional[Path] = None
+        if user_input:
+            p = Path(user_input)
+            if not p.suffix:
+                p = p.with_suffix(".rapp")
+            if p.is_absolute() and p.exists():
+                target_path = p
+            else:
+                # Si --desktop est passé ou le chemin fourni n'existe pas, tenter sur le Bureau
+                if (args.desktop or not p.exists()) and desktop_dir is not None:
+                    candidate = desktop_dir / p.name
+                    if candidate.exists():
+                        target_path = candidate
+                # Dernier essai: relatif au CWD
+                if target_path is None and Path(p).exists():
+                    target_path = Path(p)
+        else:
+            # Aucun nom fourni: si --desktop, choisir le premier .rapp sur le Bureau
+            if args.desktop and desktop_dir is not None:
+                rapps = sorted(desktop_dir.glob("*.rapp"))
+                if rapps:
+                    target_path = rapps[0]
+
+        if target_path is None:
+            print("❌ Aucun fichier .rapp trouvé. Fournissez un chemin/nom, ou utilisez --desktop.")
+            if desktop_dir is not None:
+                try:
+                    found = [p.name for p in desktop_dir.glob("*.rapp")]
+                    if found:
+                        print("ℹ️ Fichiers .rapp détectés sur le Bureau:")
+                        for name in found:
+                            print(f" - {name}")
+                except Exception:
+                    pass
+            sys.exit(1)
+
+        if target_path.suffix.lower() != ".rapp":
+            print(f"⚠️ Le fichier n'a pas l'extension .rapp: {target_path.name}")
+
+        # Lancement simple sans UI Qt (évite les QMessageBox en CLI)
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(str(target_path))
+            elif sys.platform.startswith("linux"):
+                subprocess.Popen(["xdg-open", str(target_path)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(target_path)])
+            else:
+                # Fallback via URL handler de Qt si dispo
+                try:
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(target_path)))
+                except Exception:
+                    raise RuntimeError("Ouverture non supportée sur cette plateforme")
+            print(f"▶️ Lancement de {target_path}")
+        except Exception as e:
+            print(f"❌ Impossible de lancer {target_path}: {e}")
+            sys.exit(1)
     else:
         parser.print_help()
 
@@ -13202,6 +13863,184 @@ class EnhancedUpdaterDialog(UpdaterDialog):
             self.copy_btn.setEnabled(True)
 
 
+
+class DevToolDialog(GlassDialog):
+    """Outil caché pour gérer les backups/versions et l'historique."""
+    def __init__(self, parent=None):
+        super().__init__("🛠️ Dev Tool Mises à Jour (Caché)", (880, 640), parent)
+        self._backups = []
+        self._saved_copies = []
+        self._setup_ui()
+        self._refresh_lists()
+
+    def _setup_ui(self):
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setSpacing(14)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.addWidget(make_header("Dev Tool Mises à Jour", "Liste des backups et copies sauvegardées. Restaurez ou promouvez des versions."))
+
+        self.tabs = QtWidgets.QTabWidget()
+        # Onglet Versions
+        versions_tab = QtWidgets.QWidget()
+        vlay = QtWidgets.QVBoxLayout(versions_tab)
+        vlay.setContentsMargins(8,8,8,8)
+        self.versions_list = QtWidgets.QTreeWidget()
+        self.versions_list.setHeaderLabels(["Type", "Nom", "Version", "Taille", "Chemin"]) 
+        self.versions_list.setColumnWidth(0, 110)
+        self.versions_list.setColumnWidth(1, 260)
+        self.versions_list.setColumnWidth(2, 90)
+        self.versions_list.setColumnWidth(3, 80)
+        vlay.addWidget(self.versions_list)
+        btns = QtWidgets.QHBoxLayout()
+        self.restore_btn = QtWidgets.QPushButton("↩️ Restaurer Backup")
+        self.promote_btn = QtWidgets.QPushButton("⬆️ Promouvoir Copie")
+        self.refresh_btn = QtWidgets.QPushButton("🔄 Rafraîchir")
+        btns.addWidget(self.restore_btn)
+        btns.addWidget(self.promote_btn)
+        btns.addStretch(1)
+        btns.addWidget(self.refresh_btn)
+        vlay.addLayout(btns)
+        self.tabs.addTab(versions_tab, "📦 Versions")
+
+        # Onglet Historique
+        hist_tab = QtWidgets.QWidget()
+        hlay = QtWidgets.QVBoxLayout(hist_tab)
+        hlay.setContentsMargins(8,8,8,8)
+        self.history_view = QtWidgets.QTextEdit(); self.history_view.setReadOnly(True)
+        self.history_view.setStyleSheet("font-family: 'Consolas','Courier New', monospace; font-size: 12px;")
+        hlay.addWidget(self.history_view)
+        self.tabs.addTab(hist_tab, "🧾 Historique")
+
+        lay.addWidget(self.tabs)
+        close_btn = QtWidgets.QPushButton("❌ Fermer")
+        close_btn.clicked.connect(self.close)
+        lay.addWidget(close_btn, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+
+        # Actions
+        self.refresh_btn.clicked.connect(self._refresh_lists)
+        self.restore_btn.clicked.connect(self._on_restore_selected)
+        self.promote_btn.clicked.connect(self._on_promote_selected)
+
+    def _refresh_lists(self):
+        self._backups, self._saved_copies = self._scan_backup_dir()
+        self.versions_list.clear()
+        for item in self._backups + self._saved_copies:
+            twi = QtWidgets.QTreeWidgetItem([
+                item["type"], item["name"], item.get("version", "-"),
+                str(item.get("size", "")), item["path"]
+            ])
+            self.versions_list.addTopLevelItem(twi)
+        # Historique
+        try:
+            st = read_state()
+            hist = st.get("update_history", [])
+        except Exception:
+            hist = []
+        lines = [f"{h.get('at','?')}: {h.get('from','?')} -> {h.get('to','?')} ({h.get('source','?')}/{h.get('method','?')})" for h in hist]
+        self.history_view.setPlainText("\n".join(lines) if lines else "(aucun historique)")
+
+    def _scan_backup_dir(self):
+        backups = []
+        copies = []
+        try:
+            for p in sorted(BACKUP_DIR.glob("*")):
+                if not p.is_file():
+                    continue
+                name = p.name
+                size = p.stat().st_size
+                if ".meta.json" in name:
+                    continue
+                if ".backup_" in name:
+                    # Backup du fichier principal
+                    ver = self._extract_version_from_file(p)
+                    backups.append({"type": "backup", "name": name, "path": str(p), "version": ver, "size": size})
+                elif name.startswith("ragnarOS26_updated_") and name.endswith(".py"):
+                    ver = self._extract_version_from_file(p)
+                    copies.append({"type": "copy", "name": name, "path": str(p), "version": ver, "size": size})
+        except Exception:
+            pass
+        return backups, copies
+
+    def _extract_version_from_file(self, path: Path) -> str:
+        try:
+            code = Path(path).read_text(encoding="utf-8")
+            return extract_version_from_code(code)
+        except Exception:
+            return "?"
+
+    def _selected_item(self):
+        it = self.versions_list.currentItem()
+        if not it:
+            return None
+        return {
+            "type": it.text(0),
+            "name": it.text(1),
+            "version": it.text(2),
+            "path": it.text(4)
+        }
+
+    def _on_restore_selected(self):
+        it = self._selected_item()
+        if not it or it["type"] != "backup":
+            QtWidgets.QMessageBox.information(self, "Restaurer", "Sélectionnez un backup à restaurer.")
+            return
+        target = Path(__file__).resolve()
+        backup_path = Path(it["path"]) 
+        if not backup_path.exists():
+            QtWidgets.QMessageBox.warning(self, "Backup", "Fichier de backup introuvable.")
+            return
+        ok = restore_backup(backup_path, target)
+        if ok:
+            self._append_history_entry(method="rollback", new_version=self._extract_version_from_file(target))
+            QtWidgets.QMessageBox.information(self, "Restauré", "Backup restauré. L'application va redémarrer.")
+            self._restart_prompt()
+        else:
+            QtWidgets.QMessageBox.critical(self, "Erreur", "Échec de la restauration.")
+
+    def _on_promote_selected(self):
+        it = self._selected_item()
+        if not it or it["type"] != "copy":
+            QtWidgets.QMessageBox.information(self, "Promouvoir", "Sélectionnez une copie mise à jour.")
+            return
+        src = Path(it["path"]).resolve()
+        if not src.exists():
+            QtWidgets.QMessageBox.warning(self, "Copie", "Fichier de copie introuvable.")
+            return
+        target = Path(__file__).resolve()
+        # Créer un backup avant promotion
+        create_backup(target)
+        try:
+            code = src.read_text(encoding="utf-8")
+            target.write_text(code, encoding="utf-8")
+            self._append_history_entry(method="promote", new_version=self._extract_version_from_file(src))
+            QtWidgets.QMessageBox.information(self, "Promu", "Copie promue en version active. Redémarrage requis.")
+            self._restart_prompt()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Erreur", f"Promotion échouée: {e}")
+
+    def _append_history_entry(self, method: str, new_version: str):
+        try:
+            st = read_state()
+            prev = st.get("version", DEFAULT_LOCAL_VERSION)
+            now = time.strftime("%Y-%m-%d %H:%M:%S")
+            hist = list(st.get("update_history", []))
+            hist.append({"from": prev, "to": new_version, "at": now, "source": "devtool", "method": method})
+            st["version"] = new_version
+            st["updated_at"] = now
+            st["update_history"] = hist[-200:]
+            write_state(st)
+        except Exception:
+            pass
+
+    def _restart_prompt(self):
+        reply = QtWidgets.QMessageBox.question(self, "Redémarrer", "Redémarrer Ragnar OS maintenant ?",
+                                               QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No)
+        if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+            try:
+                QtWidgets.QApplication.quit()
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            except Exception:
+                pass
 
 # Monkey-patch DesktopPage.show_updater to open EnhancedUpdaterDialog instead of original UpdaterDialog
 
