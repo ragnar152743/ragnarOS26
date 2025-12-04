@@ -14,6 +14,7 @@
 
 
 import os, sys, json, time, random, hashlib, webbrowser, shutil, traceback, subprocess, math
+import io
 
 from pathlib import Path
 
@@ -53,7 +54,7 @@ BACKUP_DIR = STATE_DIR / "backups"
 SANDBOX_DIR = STATE_DIR / "sandbox"
 MEM_SANDBOX: Dict[str, bytes] = {}
 
-DEFAULT_LOCAL_VERSION = "26.3.5"
+DEFAULT_LOCAL_VERSION = "26.4.0"
 
 # Style moderne noir pour toutes les applications Ragnar OS
 RAGNAR_MODERN_STYLE = """
@@ -316,6 +317,122 @@ def handle_exception(exc_type, exc_value, tb):
     except:
         print("Erreur critique - impossible d'afficher le dialogue")
 
+def _http_get(url: str, binary: bool = False, timeout: int = 15, retries: int = 3, backoff: float = 1.7):
+    last_exc = None
+    for i in range(retries):
+        try:
+            r = requests.get(url, timeout=timeout)
+            r.raise_for_status()
+            return r.content if binary else r.text
+        except Exception as e:
+            last_exc = e
+            time.sleep(backoff ** i)
+    raise last_exc
+
+def _sha256_bytes(data: bytes) -> str:
+    h = hashlib.sha256()
+    h.update(data)
+    return h.hexdigest()
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+def _atomic_write(target: Path, data: bytes):
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    with open(tmp, 'wb') as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, target)
+
+def _timestamp() -> str:
+    return time.strftime("%Y%m%d-%H%M%S")
+
+def _backup_file(path: Path) -> Path:
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    dst = BACKUP_DIR / f"{path.name}.{_timestamp()}.bak"
+    shutil.copy2(path, dst)
+    return dst
+
+def _load_manifest() -> Optional[Dict[str, Any]]:
+    try:
+        url = PASTEBIN_RAW_BASE.rstrip('/') + '/manifest.json'
+        txt = _http_get(url, binary=False)
+        return json.loads(txt)
+    except Exception:
+        return None
+
+def _current_version() -> str:
+    try:
+        st = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return str(st.get("version", DEFAULT_LOCAL_VERSION))
+    except Exception:
+        return DEFAULT_LOCAL_VERSION
+
+def _update_available(manifest: Dict[str, Any]) -> bool:
+    try:
+        cv = _current_version()
+        mv = str(manifest.get("version", cv))
+        def _norm(v: str) -> List[int]:
+            return [int(x) for x in (v.split('.')) if x.isdigit()]
+        return _norm(mv) > _norm(cv)
+    except Exception:
+        return False
+
+def _download_self(manifest: Optional[Dict[str, Any]]) -> Optional[bytes]:
+    url = None
+    sha = None
+    if manifest:
+        try:
+            entry = manifest.get("files", {}).get("ragnarOSupt.py")
+            if isinstance(entry, dict):
+                url = entry.get("url")
+                sha = entry.get("sha256")
+        except Exception:
+            pass
+    if not url:
+        url = PASTEBIN_RAW_BASE.rstrip('/') + '/ragnarOSupt.py'
+    data = _http_get(url, binary=True)
+    if sha:
+        calc = _sha256_bytes(data)
+        if calc.lower() != str(sha).lower():
+            raise RuntimeError("Checksum mismatch")
+    return data
+
+def ragnar_self_update(interactive: bool = True, parent: Optional[QtWidgets.QWidget] = None) -> bool:
+    try:
+        manifest = _load_manifest()
+        if manifest and not _update_available(manifest) and interactive:
+            QtWidgets.QMessageBox.information(parent, APP_NAME, "Aucune mise à jour disponible.")
+            return False
+        if interactive and QtWidgets.QMessageBox.question(parent, APP_NAME, "Mettre à jour maintenant ?") != QtWidgets.QMessageBox.StandardButton.Yes:
+            return False
+        data = _download_self(manifest)
+        me = Path(__file__).resolve()
+        if me.exists():
+            _backup_file(me)
+        _atomic_write(me, data)
+        try:
+            st = json.loads(STATE_FILE.read_text(encoding="utf-8") or '{}')
+        except Exception:
+            st = {}
+        if manifest and isinstance(manifest.get("version"), (str, int, float)):
+            st["version"] = str(manifest.get("version"))
+        else:
+            st["version"] = DEFAULT_LOCAL_VERSION
+        STATE_FILE.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+        if interactive:
+            QtWidgets.QMessageBox.information(parent, APP_NAME, "Mise à jour terminée. Redémarrage recommandé.")
+        return True
+    except Exception as e:
+        if interactive:
+            QtWidgets.QMessageBox.critical(parent, APP_NAME, f"Échec de la mise à jour: {e}")
+        return False
+
 def _layout_addSeparator(self):
     """Ajoute un séparateur à un layout (correction pour PyQt6)"""
     line = QtWidgets.QFrame()
@@ -392,6 +509,19 @@ def apply_sandbox_hooks():
         import requests as _rq
         _orig_request = _rq.sessions.Session.request
         def _blocked_request(self, method, url, *args, **kwargs):
+            # Autoriser explicitement les requêtes nécessaires aux mises à jour
+            allowed_prefixes = [
+                "https://raw.githubusercontent.com/",
+                "https://pastebin.com/",
+                "https://pastebin.pl/",
+                "https://gist.githubusercontent.com/",
+            ]
+            try:
+                if any(str(url).startswith(p) for p in allowed_prefixes):
+                    return _orig_request(self, method, url, *args, **kwargs)
+            except Exception:
+                pass
+            # Bloquer le reste des requêtes en mode sandbox
             raise RuntimeError("Sandbox: requêtes réseau bloquées")
         _rq.sessions.Session.request = _blocked_request
     except Exception:
@@ -2126,10 +2256,10 @@ class DesktopPage(QtWidgets.QWidget):
         # Barre des tâches (refonte)
         dock = QtWidgets.QWidget(objectName="GlassCard")
         dlay = QtWidgets.QHBoxLayout(dock)
-        # Style barre: moderne, arrondie, très compacte (icônes plus haut)
-        dlay.setContentsMargins(10, 0, 10, 24)
+        # Style barre: moderne, arrondie
+        dlay.setContentsMargins(12, 6, 12, 10)
         dlay.setSpacing(8)
-        dlay.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        dlay.setAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
         dock.setStyleSheet("""
             QWidget#GlassCard {
                 background: rgba(20, 24, 36, 0.48);
@@ -2137,20 +2267,32 @@ class DesktopPage(QtWidgets.QWidget):
                 border-radius: 14px;
             }
         """)
+        # Hauteur minimale = bouton (72) + marges (6+10) + sécurité (~10)
+        dock.setMinimumHeight(98)
+        _sp_dock = dock.sizePolicy()
+        _sp_dock.setVerticalPolicy(QtWidgets.QSizePolicy.Policy.Fixed)
+        dock.setSizePolicy(_sp_dock)
 
-        def btn(emoji, text, cb):
-
+        # Fabrique de bouton d'application pour le dock
+        def btn(emoji: str, text: str, cb):
             b = QtWidgets.QPushButton(f"{emoji}")
 
             b.setObjectName("DesktopButton")
             b.setToolTip(text)
-            b.setFixedSize(52, 52)
+            # Taille confortable des boutons (évite la coupe des emojis)
+            b.setFixedSize(72, 72)
             sp = b.sizePolicy()
             sp.setHorizontalPolicy(QtWidgets.QSizePolicy.Policy.Fixed)
             sp.setVerticalPolicy(QtWidgets.QSizePolicy.Policy.Fixed)
             b.setSizePolicy(sp)
-            
-            # Style moderne pour les boutons carrés compacts
+            # Appliquer une fonte avec taille en pixels pour un rendu stable des emojis
+            try:
+                _f = b.font()
+                _f.setPixelSize(24)
+                b.setFont(_f)
+            except Exception:
+                pass
+            # Style moderne pour les boutons, ajusté pour éviter la coupe des glyphes
             b.setStyleSheet("""
                 QPushButton {
                     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -2158,13 +2300,16 @@ class DesktopPage(QtWidgets.QWidget):
                         stop:0.5 rgba(255, 255, 255, 0.15),
                         stop:1 rgba(255, 255, 255, 0.05));
                     border: 2px solid rgba(255, 255, 255, 0.26);
-                    border-radius: 10px;
-                    padding: 6px;
-                    font-size: 16px;
+                    border-radius: 12px;
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+                    font-size: 20px;
                     font-weight: 600;
                     color: white;
-                    min-width: 52px;
-                    min-height: 52px;
+                    min-width: 72px;
+                    min-height: 72px;
                     text-align: center;
                 }
                 QPushButton:hover {
@@ -2248,20 +2393,21 @@ class DesktopPage(QtWidgets.QWidget):
         desktops_lay.addWidget(desktops_icon)
         desktops_lay.addWidget(self.desktop_selector)
         dlay.addWidget(desktops_container, 0)
-
-
-
         root = QtWidgets.QVBoxLayout(self)
 
-        root.setContentsMargins(18, 18, 18, 18)
-
+        # Marge inférieure réduite: dock très proche du bas sans toucher
+        root.setContentsMargins(18, 18, 18, 12)
+        
         root.setSpacing(14)
 
         root.addWidget(top)
 
         root.addStretch(1)
 
-        root.addWidget(dock)
+        # Ancrer le dock en bas, centré horizontalement, tout en respectant la marge basse
+        root.addWidget(dock, 0, QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignBottom)
+
+        # Plus de stretch ici pour éviter de recentrer le dock : on le garde ancré en bas avec marge
 
 
 
@@ -2375,6 +2521,8 @@ class DesktopPage(QtWidgets.QWidget):
         menu.addSeparator()
         upd_action = menu.addAction("⬇️ Ouvrir Updater")
         upd_action.triggered.connect(self.show_updater)
+        quick_action = menu.addAction("⚡ Mise à jour rapide")
+        quick_action.triggered.connect(self.quick_update)
         restart_action = menu.addAction("🔄 Redémarrer")
         restart_action.triggered.connect(self.restart_ragnar)
 
@@ -2639,6 +2787,7 @@ class DesktopPage(QtWidgets.QWidget):
         
         # Actions système
         system_section = [
+            ("⚡ Mise à jour rapide", self.quick_update),
             ("⬇️ Mise à jour", self.show_updater),
             ("🖼️ Personnaliser", self.change_wallpaper),
             ("🔄 Redémarrer", self.restart_ragnar),
@@ -10694,6 +10843,12 @@ indispensable pour tous les utilisateurs Ragnar.
 
         updater_dialog.exec()
 
+    def quick_update(self):
+        try:
+            ragnar_self_update(True, self)
+        except Exception:
+            pass
+
     # ===== Menu contextuel clic droit =====
     def show_context_menu(self, position):
         """Affiche le menu contextuel sur clic droit"""
@@ -11983,6 +12138,121 @@ def apply_update(update_info: Dict[str, Any], progress_callback=None) -> Dict[st
         raise RuntimeError(f"Mise à jour échouée: {e}")
 
 
+def auto_repair_start():
+
+    try:
+
+        state = read_state()
+
+    except Exception:
+
+        state = {"version": DEFAULT_LOCAL_VERSION}
+
+    current_file = Path(__file__).resolve()
+
+    if not current_file.exists():
+
+        return
+
+    try:
+
+        current_code = current_file.read_text(encoding="utf-8")
+
+    except Exception:
+
+        return
+
+    current_hash = sha256_bytes(current_code.encode("utf-8"))
+
+    current_version = state.get("version", DEFAULT_LOCAL_VERSION)
+
+    auto_info = dict(state.get("auto_repair", {}))
+
+    baseline_version = auto_info.get("baseline_version")
+
+    baseline_hash = auto_info.get("baseline_hash")
+
+    backup_path_str = auto_info.get("backup_path")
+
+    backup_path = Path(backup_path_str) if backup_path_str else None
+
+    version_changed = baseline_version is not None and baseline_version != current_version
+
+    need_new_baseline = (not baseline_hash) or (not backup_path) or (not backup_path.exists()) or version_changed
+
+    if need_new_baseline:
+
+        if version_changed and backup_path and backup_path.exists():
+
+            try:
+
+                backup_path.unlink()
+
+            except Exception:
+
+                pass
+
+        try:
+
+            new_backup = create_backup(current_file)
+
+        except Exception:
+
+            new_backup = None
+
+        if new_backup:
+
+            auto_info["baseline_version"] = current_version
+
+            auto_info["baseline_hash"] = current_hash
+
+            auto_info["backup_path"] = str(new_backup)
+
+            state["auto_repair"] = auto_info
+
+            try:
+
+                write_state(state)
+
+            except Exception:
+
+                pass
+
+        return
+
+    if current_hash != baseline_hash:
+
+        try:
+
+            answer = input(
+
+                "Ragnar OS a détecté que le fichier principal a été modifié.\n"
+
+                "Voulez-vous restaurer la version sûre précédente ? (o/N) : "
+
+            ).strip().lower()
+
+        except Exception:
+
+            answer = ""
+
+        if answer in ("o", "oui", "y", "yes"):
+
+            if backup_path and backup_path.exists():
+
+                if restore_backup(backup_path, current_file):
+
+                    print("Fichier restauré depuis la sauvegarde. Redémarrage de Ragnar OS...")
+
+                    try:
+
+                        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+                    except Exception:
+
+                        pass
+
+
 
 # ====== Interface de mise à jour ======
 
@@ -12463,7 +12733,22 @@ class UpdaterDialog(GlassDialog):
         button_layout.addStretch()
         
         layout.addLayout(button_layout)
-    
+
+        self.progress_label = QtWidgets.QLabel("")
+        self.progress_label.setStyleSheet("color: white; font-size: 12px; padding-top: 4px;")
+        self.progress_label.setVisible(False)
+
+        self.progress = QtWidgets.QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setVisible(False)
+
+        progress_layout = QtWidgets.QVBoxLayout()
+        progress_layout.addWidget(self.progress_label)
+        progress_layout.addWidget(self.progress)
+
+        layout.addLayout(progress_layout)
+
     def download_from_url(self):
         """Télécharge un fichier depuis une URL"""
         url = self.url_input.text().strip()
@@ -13418,6 +13703,14 @@ class MainWindow(QtWidgets.QStackedWidget):
 
 
 def main():
+
+    try:
+
+        auto_repair_start()
+
+    except Exception:
+
+        pass
 
     app = QtWidgets.QApplication(sys.argv)
 
